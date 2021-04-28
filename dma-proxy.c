@@ -138,7 +138,7 @@ static void start_transfer(struct dma_proxy_channel *pchannel_p, u64 pl_addr, un
     }
     else if(pchannel_p->direction == DMA_DEV_TO_MEM){              
         //如果从PL读,写PS,BD描述符缓冲区地址为PL物理地址,APP字段为PS DMA总线地址
-        context[0] = 0x40800000+ (sg_len & 0x7FFFFF);              //APP0: datamover command, EOF=1,Type=1,BTT=interface_p->length, 
+        context[0] = 0x40800000 + (sg_len & 0x7FFFFF);              //APP0: datamover command, EOF=1,Type=1,BTT=interface_p->length, 
         context[1] = (pchannel_p->dma_handle) & 0xFFFFFFFF;         //APP1: datamover command, 低32位
         context[2] = ( (pchannel_p->dma_handle)>>32) & 0xFFFFFFFF;
         
@@ -203,35 +203,34 @@ static void wait_for_transfer(struct dma_proxy_channel *pchannel_p)
  */
 static void transfer(struct dma_proxy_channel *pchannel_p)
 {
-    int max_transfer_size = 0x7FFFF8; 
+    // 4 bytes align
+    int max_transfer_size = 0x7FFF00; 
     u64 pl_addr = 0x80000000;
     int cnt = 0;
+    const char dir[3][5] = {"h2h","h2c","c2h"};
+
 	/* The physical address of the buffer in the interface is needed for the dma transfer
 	 * as the buffer may not be the first data in the interface
 	 */
-    printk("\npchannel_p->interface_phys_addr: %#llx\n",pchannel_p->interface_phys_addr);
+    printk("pchannel_p->interface_phys_addr: %#llx\n",pchannel_p->interface_phys_addr);
 	pchannel_p->dma_handle = (dma_addr_t)(pchannel_p->interface_phys_addr + 
 					offsetof(struct dma_proxy_channel_interface, buffer));
     while(pchannel_p->interface_p->length > max_transfer_size){
-        printk( "pl addr %#llx, ps physical addr %#llx, size %#llx\n", pl_addr, pchannel_p->dma_handle, max_transfer_size);
+        printk(KERN_INFO "%s %dst transfer: pl addr %#llx, ps physical addr %#llx, size %#x\n", dir[pchannel_p->direction], cnt, pl_addr, pchannel_p->dma_handle, max_transfer_size);
         start_transfer(pchannel_p,pl_addr,max_transfer_size);
 	    wait_for_transfer(pchannel_p);
-        //printk("%dst 0x7ffff8 size buffer transfer ok!\n",cnt);
-        //更新PL DDR缓冲区起始物理地址
+        //update PL DDR buffer start addr and ARM DDR buffer start addr
         pl_addr  += max_transfer_size;
-        //更新ARM内存缓冲区起始物理地址
-        //pchannel_p->dma_handle += (max_transfer_size/sizeof(dma_addr_t));
         pchannel_p->dma_handle += max_transfer_size;
-        //更新剩下需要传输的字节数
+        //update the left bytes to transfer
         pchannel_p->interface_p->length -= max_transfer_size;
-        //++cnt;
+        ++cnt;
     }
     if(pchannel_p->interface_p->length > 0){
-        printk( "pl addr %#llx, ps physical addr %#llx, size %#llx\n", pl_addr, pchannel_p->dma_handle, pchannel_p->interface_p->length);   
-        //一种可能是最后剩下不到0x7FFFFF,一种可能是本来要传的就不到0x7FFFFF
+        printk(KERN_INFO "%s %dst transfer: pl addr %#llx, ps physical addr %#llx, size %#x\n\n", dir[pchannel_p->direction], cnt, pl_addr, pchannel_p->dma_handle, pchannel_p->interface_p->length);   
+        //one possible is left to transfer is less than max_transfer_size, one possible is the origin to transfer is less than max_transfer_size
         start_transfer(pchannel_p, pl_addr, pchannel_p->interface_p->length);
 	    wait_for_transfer(pchannel_p);
-        //printk("last %d byte buffer transfer ok!\n",pchannel_p->interface_p->length);
     }
 
 }
@@ -248,8 +247,8 @@ static void test(void)
 {
 	int i;
 	struct work_struct work;
-    //int test_size=0x1000;
-	int test_size = 0x800001;
+	//int test_size = 0x800000;
+    int test_size = 0x1000;
 
 	printk("Starting internal test\n");
 
@@ -263,8 +262,6 @@ static void test(void)
 	/* Since the transfer function is blocking the transmit channel is started from a worker
 	 * thread
 	 */
-	//INIT_WORK(&work, tx_test);
-	//schedule_work(&work);
     tx_test(&work,test_size);
 
 	/* Receive the data that was just sent and looped back

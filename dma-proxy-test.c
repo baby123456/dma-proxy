@@ -28,6 +28,31 @@ static struct dma_proxy_channel_interface *tx_proxy_interface_p;
 static int tx_proxy_fd;
 static int test_size; 
 
+int tolower(int c){
+    if (c >= 'A' && c <= 'Z')
+        return c + 'a' - 'A';
+    else
+        return c;
+}
+
+int str2hex(char s[])
+{
+    int i;
+    int n = 0;
+    if (s[0] == '0' && (s[1]=='x' || s[1]=='X'))
+        i = 2;
+    else
+        i = 0;
+    for (; (s[i] >= '0' && s[i] <= '9') || (s[i] >= 'a' && s[i] <= 'z') || (s[i] >='A' && s[i] <= 'Z');++i){
+        if (tolower(s[i]) > '9')
+            n = 16 * n + (10 + tolower(s[i]) - 'a');
+        else
+            n = 16 * n + (tolower(s[i]) - '0');
+    }
+    return n;
+}
+
+
 /* The following function is the transmit thread to allow the transmit and the
  * receive channels to be operating simultaneously. The ioctl calls are blocking
  * such that a thread is needed.
@@ -77,6 +102,7 @@ int main(int argc, char *argv[])
 	 */
     num_transfer = atoi(argv[1]);
 	test_size = atoi(argv[2]);
+    //test_size = str2hex(argv[2]);
 	if (test_size > TEST_SIZE)
 		test_size = TEST_SIZE;
 
@@ -125,6 +151,8 @@ int main(int argc, char *argv[])
     
     gettimeofday( &start, NULL );
 	for (counter = 0; counter < num_transfer; counter++) {
+        tx_proxy_interface_p->length = test_size;
+
         if(verify){
             for (i = 0; i < test_size; i++)
                 tx_proxy_interface_p->buffer[i] = counter + i;
@@ -134,21 +162,21 @@ int main(int argc, char *argv[])
             */
 	        for (i = 0; i < test_size; i++)
 		        rx_proxy_interface_p->buffer[i] = 0;
-	        rx_proxy_interface_p->length = test_size;
         }
+        rx_proxy_interface_p->length = test_size;
         
         /* Perform the DMA transfer and the check the status after it completes
 	 	 * as the call blocks til the transfer is done.
  		 */
 		ioctl(tx_proxy_fd, 0, &dummy);
 		if (tx_proxy_interface_p->status != PROXY_NO_ERROR)
-			printf("Proxy tx transfer error\n");
+			printf("Proxy tx transfer error,%d\n",tx_proxy_interface_p->status);
 
 		/* Perform a receive DMA transfer and after it finishes check the status
 		 */
 		ioctl(rx_proxy_fd, 0, &dummy);
 		if (rx_proxy_interface_p->status != PROXY_NO_ERROR)
-			printf("Proxy rx transfer error\n");
+			printf("Proxy rx transfer error,%d\n",rx_proxy_interface_p->status);
 
 		/* Verify the data recieved matchs what was sent (tx is looped back to tx)
 		 */
