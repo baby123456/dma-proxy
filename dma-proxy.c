@@ -111,25 +111,26 @@ static void sync_callback(void *completion)
  * to ibe queued and return a cookie that can be used to track that status of the
  * transaction
  */
-static void start_transfer(struct dma_proxy_channel *pchannel_p)
+static void start_transfer(struct dma_proxy_channel *pchannel_p, u64 pl_addr, unsigned int sg_len)
 {
 	enum dma_ctrl_flags flags = DMA_CTRL_ACK | DMA_PREP_INTERRUPT;
 	struct dma_async_tx_descriptor *chan_desc;
-	struct dma_proxy_channel_interface *interface_p = pchannel_p->interface_p;
+	//struct dma_proxy_channel_interface *interface_p = pchannel_p->interface_p;
     struct dma_device *dma_device = pchannel_p->channel_p->device;
 
     u32 context[5] = {0x0};
-    u64 pl_addr = 0x80000000;
+    //u64 pl_addr = 0x80000000 + pl_addr_offset;
 	
     /* For now use a single entry in a scatter gather list just for future
 	 * flexibility for scatter gather.
 	 */
 	sg_init_table(&pchannel_p->sglist, 1);
-	sg_dma_len(&pchannel_p->sglist) = interface_p->length;
-    
+	//sg_dma_len(&pchannel_p->sglist) = interface_p->length;
+    sg_dma_len(&pchannel_p->sglist) = sg_len;
+
     if(pchannel_p->direction == DMA_MEM_TO_DEV){                   
         //如果从PS读,写PL,BD描述符缓冲区地址为DMA总线地址,APP字段为PL物理地址
-        context[0] = 0x40800000 + (interface_p->length & 0x7FFFFF);   //APP0: datamover command, EOF=1,Type=1,BTT=interface_p->length(最多23位，即8MB), 
+        context[0] = 0x40800000 + (sg_len & 0x7FFFFF);   //APP0: datamover command, EOF=1,Type=1,BTT=interface_p->length(最多23位，即8MB), 
         context[1] = pl_addr & 0xFFFFFFFF;                                      //APP1: datamover command, 低32位
         context[2] = (pl_addr>>32) & 0xFFFFFFFF;
 	    
@@ -137,7 +138,7 @@ static void start_transfer(struct dma_proxy_channel *pchannel_p)
     }
     else if(pchannel_p->direction == DMA_DEV_TO_MEM){              
         //如果从PL读,写PS,BD描述符缓冲区地址为PL物理地址,APP字段为PS DMA总线地址
-        context[0] = 0x40800000+ (interface_p->length & 0x7FFFFF);              //APP0: datamover command, EOF=1,Type=1,BTT=interface_p->length, 
+        context[0] = 0x40800000+ (sg_len & 0x7FFFFF);              //APP0: datamover command, EOF=1,Type=1,BTT=interface_p->length, 
         context[1] = (pchannel_p->dma_handle) & 0xFFFFFFFF;         //APP1: datamover command, 低32位
         context[2] = ( (pchannel_p->dma_handle)>>32) & 0xFFFFFFFF;
         
@@ -202,14 +203,37 @@ static void wait_for_transfer(struct dma_proxy_channel *pchannel_p)
  */
 static void transfer(struct dma_proxy_channel *pchannel_p)
 {
+    int max_transfer_size = 0x7FFFF8; 
+    u64 pl_addr = 0x80000000;
+    int cnt = 0;
 	/* The physical address of the buffer in the interface is needed for the dma transfer
 	 * as the buffer may not be the first data in the interface
 	 */
+    printk("\npchannel_p->interface_phys_addr: %#llx\n",pchannel_p->interface_phys_addr);
 	pchannel_p->dma_handle = (dma_addr_t)(pchannel_p->interface_phys_addr + 
 					offsetof(struct dma_proxy_channel_interface, buffer));
+    while(pchannel_p->interface_p->length > max_transfer_size){
+        printk( "pl addr %#llx, ps physical addr %#llx, size %#llx\n", pl_addr, pchannel_p->dma_handle, max_transfer_size);
+        start_transfer(pchannel_p,pl_addr,max_transfer_size);
+	    wait_for_transfer(pchannel_p);
+        //printk("%dst 0x7ffff8 size buffer transfer ok!\n",cnt);
+        //更新PL DDR缓冲区起始物理地址
+        pl_addr  += max_transfer_size;
+        //更新ARM内存缓冲区起始物理地址
+        //pchannel_p->dma_handle += (max_transfer_size/sizeof(dma_addr_t));
+        pchannel_p->dma_handle += max_transfer_size;
+        //更新剩下需要传输的字节数
+        pchannel_p->interface_p->length -= max_transfer_size;
+        //++cnt;
+    }
+    if(pchannel_p->interface_p->length > 0){
+        printk( "pl addr %#llx, ps physical addr %#llx, size %#llx\n", pl_addr, pchannel_p->dma_handle, pchannel_p->interface_p->length);   
+        //一种可能是最后剩下不到0x7FFFFF,一种可能是本来要传的就不到0x7FFFFF
+        start_transfer(pchannel_p, pl_addr, pchannel_p->interface_p->length);
+	    wait_for_transfer(pchannel_p);
+        //printk("last %d byte buffer transfer ok!\n",pchannel_p->interface_p->length);
+    }
 
-	start_transfer(pchannel_p);
-	wait_for_transfer(pchannel_p);
 }
 
 /* The following functions are designed to test the driver from within the device
@@ -224,8 +248,9 @@ static void test(void)
 {
 	int i;
 	struct work_struct work;
-    int test_size=0x1000;
-	
+    //int test_size=0x1000;
+	int test_size = 0x800001;
+
 	printk("Starting internal test\n");
 
 	/* Initialize the buffers for the test
@@ -250,13 +275,14 @@ static void test(void)
 	/* Verify the receiver buffer matches the transmit buffer to
 	 * verify the transfer was good
 	 */
+    
 	for (i = 0; i < test_size; i++)
 		if (channels[TX_CHANNEL].interface_p->buffer[i] !=
 			channels[RX_CHANNEL].interface_p->buffer[i]) {
 			printk("buffers not equal, first index = %d\n", i);
 			break;
 		}
-
+    
 	printk("Internal test complete\n");
 }
 
@@ -439,8 +465,8 @@ static int create_channel(struct platform_device *pdev, struct dma_proxy_channel
 		dmam_alloc_coherent(pchannel_p->dma_device_p,
 					sizeof(struct dma_proxy_channel_interface),
 					&pchannel_p->interface_phys_addr, GFP_KERNEL);
-		printk(KERN_INFO "Allocating uncached memory at virtual address 0x%p, physical address 0x%p\n", 
-			pchannel_p->interface_p, (void *)pchannel_p->interface_phys_addr);
+		printk(KERN_INFO "Allocating uncached memory at virtual address 0x%p, physical address %#llx\n", 
+			pchannel_p->interface_p, pchannel_p->interface_phys_addr);
 
 	if (!pchannel_p->interface_p) {
 		dev_err(pchannel_p->dma_device_p, "DMA allocation error\n");
